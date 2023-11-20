@@ -14,7 +14,7 @@ const app = new Koa();
 
 app.use(async (ctx, next) => {
   // Так как frontend на ходится на сервере, то CORS не нужен.
-  // ctx.response.set('Access-Control-Allow-Origin', '*');
+  ctx.response.set('Access-Control-Allow-Origin', '*');
   await next();
 });
 

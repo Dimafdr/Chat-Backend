@@ -1,104 +1,83 @@
-/* eslint-disable max-len */
-const path = require('path');
 const http = require('http');
 const Koa = require('koa');
-const koaStatic = require('koa-static');
 const koaBody = require('koa-body');
-const Router = require('koa-router');
 const WS = require('ws');
-const { Chat } = require('./src/Chat');
 
-const chat = new Chat();
+const router = require('./routes');
 
 const app = new Koa();
 
+app.use(koaBody({
+  urlencoded: true,
+}));
+
 app.use(async (ctx, next) => {
-  // Так как frontend на ходится на сервере, то CORS не нужен.
-  ctx.response.set('Access-Control-Allow-Origin', '*');
-  await next();
-});
+  const origin = ctx.request.get('Origin');
+  if (!origin) {
+    return await next();
+  }
 
-const dirPublic = path.join(__dirname, 'public');
-app.use(koaStatic(dirPublic));
+  const headers = { 'Access-Control-Allow-Origin': '*', };
 
-// Чтобы router выдавал тело запроса (ctx.request.body).
-app.use(koaBody());
-
-const router = new Router();
-
-app.use(router.routes());
-app.use(router.allowedMethods());
-
-// '/users' фронтендом не использовалось
-router.get('/users', async (ctx) => {
-  console.log('URL', ctx.request.url);
-  ctx.response.body = JSON.stringify(chat.getUserNames());
-});
-
-router.post('/login', async (ctx) => {
-  console.log('URL', ctx.request.url);
-  console.log('ctx.request.body', ctx.request.body);
-  ctx.response.body = JSON.stringify(chat.login(ctx.request.body));
-});
-
-const PORT = process.env.PORT || 3000;
-const server = http.createServer(app.callback());
-// eslint-disable-next-line no-console
-server.listen(PORT, () => console.log(`Koa server has been started on port ${PORT} ...`));
-
-// Подключаем WS сервер.
-const wsServer = new WS.Server({ server });
-
-wsServer.on('connection', (ws, req) => {
-  // eslint-disable-next-line no-console
-  console.log('---------------------------------------------------------------------------\nnew connection');
-
-  ws.on('message', (msg) => {
+  if (ctx.request.method !== 'OPTIONS') {
+    ctx.response.set({ ...headers });
     try {
-      const message = JSON.parse(msg);
-      switch (message.type) {
-        case 'connected':
-          message.userNames = chat.getUserNames();
-          chat.sockets.set(req.socket, message.userName);
-          break;
-        case 'message':
-          // eslint-disable-next-line no-console
-          console.log(`User ${message.userName} sent a message`);
-          break;
-        // eslint-disable-next-line no-console
-        default: console.log(`Unknown message type ${message.type}`);
-      }
-
-      [...wsServer.clients]
-        .filter((client) => client.readyState === WS.OPEN)
-        // отфильтровать клиента, от которого пришло сообщение (убрать его из списка клиентов,
-        // которые получат сообщение (в данной реализации чата это не нужно))
-        // .filter((client) => client._socket !== req.socket)
-        .forEach((client) => {
-          client.send(JSON.stringify(message));
-        });
+      return await next();
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.log(e);
+      e.headers = { ...e.headers, ...headers };
+      throw e;
     }
+  }
+
+  if (ctx.request.get('Access-Control-Request-Method')) {
+    ctx.response.set({
+      ...headers,
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH',
+    });
+
+    if (ctx.request.get('Access-Control-Request-Headers')) {
+      ctx.response.set('Access-Control-Allow-Headers', ctx.request.get('Access-Control-Request-Headers'));
+    }
+
+    ctx.response.status = 204;
+  }
+});
+
+//TODO: write code here
+
+app.use(router());
+
+const port = process.env.PORT || 7070;
+const server = http.createServer(app.callback());
+
+const wsServer = new WS.Server({
+  server
+});
+
+const chat = [];
+
+wsServer.on('connection', (ws) => {
+  ws.on('message', (message) => {
+      chat.push(message);
+
+      const eventData = JSON.stringify({ chat: [message] });
+
+      Array.from(wsServer.clients)
+        .filter(client => client.readyState === WS.OPEN)
+        .forEach(client => {
+          client.send(eventData)
+        });
   });
 
-  ws.on('close', () => {
-    const clients = [...wsServer.clients];
-    chat.sockets.forEach(((value, key) => {
-      // eslint-disable-next-line no-underscore-dangle
-      const result = clients.find((client) => key === client._socket);
-      if (!result) {
-        // Убрать юзера и клиент
-        chat.removeUser(key);
-        clients.forEach((client) => {
-          client.send(JSON.stringify({
-            type: 'disconnected',
-            userName: value,
-            userNames: chat.getUserNames(),
-          }));
-        });
-      }
-    }));
-  });
+    ws.send(JSON.stringify({ chat }));
 });
+
+server.listen(port, (err) => {
+  if (err) {
+    console.log(err);
+
+    return;
+  }
+  console.log('Server is listening to ' + port);
+});
+
